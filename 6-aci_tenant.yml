@@ -1,0 +1,118 @@
+- name: APIC - L2Out setup
+  hosts: dCloud1
+  gather_facts: no
+
+  vars:
+    aci_login: &aci_login
+      hostname: '{{ apic_host }}'
+      username: '{{ apic_username }}'
+      password: '{{ apic_password }}'
+      use_proxy: '{{ apic_use_proxy }}'
+      validate_certs: '{{ apic_validate_certs }}'
+  
+  tasks:
+  - name: Create production VRF
+    aci_vrf:
+      <<: *aci_login
+      vrf: "{{ dc.siteCode }}_Prod_Vrf"
+      tenant: "{{ dc.siteCode }}_Prod"
+      policy_control_preference: enforced
+      policy_control_direction: ingress
+    delegate_to: localhost
+
+  - name: Create application profile for network-centric implementation
+    aci_ap:
+      <<: *aci_login
+      tenant: "{{ dc.siteCode }}_Prod"
+      ap: "{{ dc.siteCode }}_Prod_Ap"
+      state: present
+    delegate_to: localhost
+
+  - name: Create bridge domains (one per VLAN)
+    aci_bd:
+      <<: *aci_login
+      tenant: "{{ dc.siteCode }}_Prod"
+      bd: "Vl{{ item }}_Bd"
+      arp_flooding: yes
+      l2_unknown_unicast: flood
+    with_items: "{{ tenant.vlanList }}"
+    delegate_to: localhost
+
+  - name: Create permit-all contracts in production tenant
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni.xml
+      method: post
+      content: |
+        <fvTenant name ="{{ dc.siteCode }}_Prod">
+            <vzFilter annotation="" descr="" name="Prod_Permit_All_Ft" nameAlias="" ownerKey="" ownerTag="">
+                <vzEntry annotation="" applyToFrag="no" arpOpc="unspecified" dFromPort="unspecified" dToPort="unspecified" descr="" etherT="unspecified" icmpv4T="unspecified" icmpv6T="unspecified" matchDscp="unspecified" name="All" nameAlias="" prot="unspecified" sFromPort="unspecified" sToPort="unspecified" stateful="no" tcpRules=""/>
+            </vzFilter>
+            <vzBrCP annotation="" descr="" name="Prod_Permit_All_Ct" nameAlias="" ownerKey="" ownerTag="" prio="unspecified" scope="context" targetDscp="unspecified">
+                <vzSubj targetDscp="unspecified" revFltPorts="yes" provMatchT="AtleastOne" prio="unspecified" nameAlias="" name="Prod_Permit_All_Sub" dn="uni/tn-{{ dc.siteCode }}_Prod/brc-Prod_Permit_All_Ct/subj-Prod_Permit_All_Sub" descr="" consMatchT="AtleastOne" annotation="">
+                    <vzRsSubjFiltAtt annotation="" tnVzFilterName="Prod_Permit_All_Ft" priorityOverride="default" directives="" action="permit"/>
+                </vzSubj>
+            </vzBrCP>
+        </fvTenant>
+    delegate_to: localhost
+
+  - name: Create EPGs
+    aci_epg:
+      <<: *aci_login
+      tenant: "{{ dc.siteCode }}_Prod"
+      ap: "{{ dc.siteCode }}_Prod_Ap"
+      bd: "Vl{{ item }}_Bd"
+      epg: "Vl{{ item }}_Epg"
+      state: present
+    with_items: "{{ tenant.vlanList }}"
+    delegate_to: localhost
+
+  - name: Associate domains to EPGs
+    aci_epg_to_domain:
+      <<: *aci_login
+      tenant: "{{ dc.siteCode }}_Prod"
+      ap: "{{ dc.siteCode }}_Prod_Ap"
+      epg: "Vl{{ item }}_Epg"
+      domain: "{{ dc.siteCode }}_Prod_Phys_Dom"
+      domain_type: phys
+    with_items: "{{ tenant.vlanList }}"
+    delegate_to: localhost
+
+  - name: Associate permit any contracts to EPGs (provided)
+    aci_epg_to_contract:
+      <<: *aci_login
+      tenant: "{{ dc.siteCode }}_Prod"
+      ap: "{{ dc.siteCode }}_Prod_Ap"
+      epg: "Vl{{ item }}_Epg"
+      contract: Prod_Permit_All_Ct
+      contract_type: provider
+    with_items: "{{ tenant.vlanList }}"
+    delegate_to: localhost
+
+  - name: Associate permit any contracts to EPGs (consumed)
+    aci_epg_to_contract:
+      <<: *aci_login
+      tenant: "{{ dc.siteCode }}_Prod"
+      ap: "{{ dc.siteCode }}_Prod_Ap"
+      epg: "Vl{{ item }}_Epg"
+      contract: Prod_Permit_All_Ct
+      contract_type: consumer
+    with_items: "{{ tenant.vlanList }}"
+    delegate_to: localhost
+
+  - name: Associate L2Outs with EPGs
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni.xml
+      method: post
+      content: |
+        <fvTenant name="{{ dc.siteCode }}_Prod">
+            <fvAp annotation="" descr="" name="{{ dc.siteCode }}_Prod_Ap" nameAlias="" ownerKey="" ownerTag="" prio="unspecified">
+              {% for vlan in tenant.vlanList %}
+              <fvAEPg annotation="" descr="" exceptionTag="" floodOnEncap="disabled" fwdCtrl="" hasMcastSource="no" isAttrBasedEPg="no" matchT="AtleastOne" name="Vl{{ vlan }}_Epg" nameAlias="" pcEnfPref="unenforced" prefGrMemb="exclude" prio="unspecified" shutdown="no">
+                  <fvRsPathAtt annotation="" descr="" encap="vlan-{{ vlan }}" instrImedcy="lazy" mode="regular" primaryEncap="unknown" tDn="topology/pod-1/protpaths-{{ switches.l2Out.sw1.nodeId }}-{{ switches.l2Out.sw2.nodeId }}/pathep-[{{ dc.siteCode }}_Prod_Infra_L2Out_{{ switches.l2Out.sw1.nodeId }}_{{ switches.l2Out.sw2.nodeId }}_LacpAct_IntPoPlGrp]"/>
+              </fvAEPg>
+              {% endfor %}
+            </fvAp>
+        </fvTenant>
+    delegate_to: localhost

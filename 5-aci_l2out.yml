@@ -1,0 +1,91 @@
+- name: APIC - L2Out setup
+  hosts: dCloud1
+  gather_facts: no
+
+  vars:
+    aci_login: &aci_login
+      hostname: '{{ apic_host }}'
+      username: '{{ apic_username }}'
+      password: '{{ apic_password }}'
+      use_proxy: '{{ apic_use_proxy }}'
+      validate_certs: '{{ apic_validate_certs }}'
+  
+  tasks:
+  - name: Add interface profiles and port block ranges for L2 out ports
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni.xml
+      method: post
+      content: |
+        <infraInfra>
+            <infraAccPortP name="Leaf{{ switches.l2Out.sw1.nodeId }}_IntProf">
+                {% for port in switches.l2Out.l2OutPorts %}
+                <infraHPortS name="eth1_{{ port }}" type="range">
+                    <infraPortBlk annotation="" descr="" fromCard="1" fromPort="{{ port }}" name="blk" nameAlias="" toCard="1" toPort="{{ port }}"/>
+                </infraHPortS>
+                {% endfor %}
+            </infraAccPortP>
+            <infraAccPortP name="Leaf{{ switches.l2Out.sw2.nodeId }}_IntProf">
+                {% for port in switches.l2Out.l2OutPorts %}
+                <infraHPortS name="eth1_{{ port }}" type="range">
+                    <infraPortBlk annotation="" descr="" fromCard="1" fromPort="{{ port }}" name="blk" nameAlias="" toCard="1" toPort="{{ port }}"/>
+                </infraHPortS>
+                {% endfor %}
+            </infraAccPortP>    
+        </infraInfra>
+    delegate_to: localhost
+
+  - name: Add switch selector profiles for L2 out switches
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni.xml
+      method: post
+      content: |
+        <infraInfra>
+            <infraNodeP descr="" name="Leaf{{ switches.l2Out.sw1.nodeId }}_SwSel">
+                <infraRsAccPortP annotation="" tDn="uni/infra/accportprof-Leaf{{ switches.l2Out.sw1.nodeId }}_IntProf"/>
+                <infraLeafS descr="" name="Leaf{{ switches.l2Out.sw1.nodeId }}" type="range">
+                    <infraNodeBlk descr="" from_="{{ switches.l2Out.sw1.nodeId }}" name="Leaf{{ switches.l2Out.sw1.nodeId }}" nameAlias="" to_="{{ switches.l2Out.sw1.nodeId }}"/>
+                </infraLeafS>
+            </infraNodeP>
+            <infraNodeP descr="" name="Leaf{{ switches.l2Out.sw2.nodeId }}_SwSel">
+                <infraRsAccPortP annotation="" tDn="uni/infra/accportprof-Leaf{{ switches.l2Out.sw2.nodeId }}_IntProf"/>
+                <infraLeafS descr="" name="Leaf{{ switches.l2Out.sw2.nodeId }}" type="range">
+                    <infraNodeBlk descr="" from_="{{ switches.l2Out.sw2.nodeId }}" name="Leaf{{ switches.l2Out.sw2.nodeId }}" nameAlias="" to_="{{ switches.l2Out.sw2.nodeId }}"/>
+                </infraLeafS>
+            </infraNodeP>
+        </infraInfra>
+    delegate_to: localhost
+
+  - name: Create VPC interface port profile for L2Out uplink
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni.xml
+      method: post
+      content: |
+        <infraInfra>
+            <infraFuncP>
+                <infraAccBndlGrp annotation="" descr="" lagT="node" name="{{ dc.siteCode }}_Prod_Infra_L2Out_{{ switches.l2Out.sw1.nodeId }}_{{ switches.l2Out.sw2.nodeId }}_LacpAct_IntPoPlGrp">
+                    <infraRsMcpIfPol annotation="" tnMcpIfPolName="Mcp_Disabled"/>
+                    <infraRsAttEntP annotation="" tDn="uni/infra/attentp-{{ dc.siteCode }}_Prod_Aaep"/>
+                    <infraRsCdpIfPol annotation="" tnCdpIfPolName="Cdp_Enabled"/>
+                    <infraRsLacpPol annotation="" tnLacpLagPolName="Lacp_Active"/>
+                    <infraRsLldpIfPol annotation="" tnLldpIfPolName="Lldp_Enabled"/>
+                </infraAccBndlGrp>
+            </infraFuncP>
+            <infraAccPortP annotation="" descr="" name="Leaf{{ switches.l2Out.sw1.nodeId }}_IntProf">
+                {% for port in switches.l2Out.l2OutPorts %}
+                <infraHPortS annotation="" descr="" name="eth1_{{ port }}" type="range">
+                    <infraRsAccBaseGrp tDn="uni/infra/funcprof/accbundle-{{ dc.siteCode }}_Prod_Infra_L2Out_{{ switches.l2Out.sw1.nodeId }}_{{ switches.l2Out.sw2.nodeId }}_LacpAct_IntPoPlGrp"/>
+                </infraHPortS>
+                {% endfor %}
+            </infraAccPortP>
+            <infraAccPortP annotation="" descr="" name="Leaf{{ switches.l2Out.sw2.nodeId }}_IntProf">
+                {% for port in switches.l2Out.l2OutPorts %}
+                <infraHPortS annotation="" descr="" name="eth1_{{ port }}" type="range">
+                    <infraRsAccBaseGrp tDn="uni/infra/funcprof/accbundle-{{ dc.siteCode }}_Prod_Infra_L2Out_{{ switches.l2Out.sw1.nodeId }}_{{ switches.l2Out.sw2.nodeId }}_LacpAct_IntPoPlGrp"/>
+                </infraHPortS>
+                {% endfor %}
+            </infraAccPortP>
+        </infraInfra>
+    delegate_to: localhost

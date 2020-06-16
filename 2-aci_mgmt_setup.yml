@@ -1,0 +1,224 @@
+- name: APIC - One-time management setup
+  hosts: dCloud1
+  gather_facts: no
+
+  vars:
+    aci_login: &aci_login
+      hostname: '{{ apic_host }}'
+      username: '{{ apic_username }}'
+      password: '{{ apic_password }}'
+      use_proxy: '{{ apic_use_proxy }}'
+      validate_certs: '{{ apic_validate_certs }}'
+  
+  tasks:
+  - name: Enable OOB IP addresses on spine switches
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni.xml
+      method: post
+      content: |
+        <fvTenant name="mgmt">
+              <mgmtMgmtP name="default">
+                  <mgmtOoB name="default">
+                      <mgmtRsOoBStNode addr="{{ switches.spine.sw1.mgmtIp }}{{ switches.spine.mgmtSubnet }}" annotation="" gw="{{ switches.spine.mgmtGw }}" tDn="topology/pod-1/node-{{ switches.spine.sw1.nodeId }}" v6Addr="::" v6Gw="::"/>
+                      <mgmtRsOoBStNode addr="{{ switches.spine.sw2.mgmtIp }}{{ switches.spine.mgmtSubnet }}" annotation="" gw="{{ switches.spine.mgmtGw }}" tDn="topology/pod-1/node-{{ switches.spine.sw2.nodeId }}" v6Addr="::" v6Gw="::"/>
+                  </mgmtOoB>
+              </mgmtMgmtP>
+        </fvTenant>
+    delegate_to: localhost
+
+  - name: Enable OOB IP addresses on leaf switches
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni.xml
+      method: post
+      content: |
+        <fvTenant name="mgmt">
+              <mgmtMgmtP name="default">
+                  <mgmtOoB name="default">
+                      {% for node in switches.leaf.nodes %}
+                      <mgmtRsOoBStNode addr="{{ node.sw1.mgmtIp }}{{ node.mgmtSubnet }}" annotation="" gw="{{ node.mgmtGw }}" tDn="topology/pod-1/node-{{ node.sw1.nodeId }}" v6Addr="::" v6Gw="::"/>
+                      <mgmtRsOoBStNode addr="{{ node.sw2.mgmtIp }}{{ node.mgmtSubnet }}" annotation="" gw="{{ node.mgmtGw }}" tDn="topology/pod-1/node-{{ node.sw2.nodeId }}" v6Addr="::" v6Gw="::"/>
+                      {% endfor %} 
+                  </mgmtOoB>
+              </mgmtMgmtP>
+        </fvTenant>
+    delegate_to: localhost
+
+  - name: Enable NTP services
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni/fabric.xml
+      method: post
+      content: |
+        <datetimePol StratumValue="8" adminSt="enabled" annotation="" authSt="disabled" descr="" masterMode="disabled" name="Fabric_Date_Time" nameAlias="" ownerKey="" ownerTag="" serverState="disabled">
+                {% for server in dc.ntp %}
+                <datetimeNtpProv annotation="" descr="" keyId="0" maxPoll="6" minPoll="4" name="{{ server }}" nameAlias="" preferred="no" trueChimer="disabled">
+                    <datetimeRsNtpProvToEpg annotation="" tDn="uni/tn-mgmt/mgmtp-default/oob-default"/>
+                </datetimeNtpProv>
+                {% endfor %}
+        </datetimePol>
+    delegate_to: localhost
+
+  - name: Enable SNMP services
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni/fabric.xml
+      method: post
+      content: |
+        <snmpPol adminSt="enabled" annotation="" contact="{{ dc.snmp.contact }}" descr="" loc="{{ dc.snmp.location }}" name="Snmp_Allow" nameAlias="">
+            <snmpCommunityP annotation="" descr="" name="{{ dc.snmp.community }}" nameAlias=""/>
+        </snmpPol>
+    delegate_to: localhost
+
+  - name: Configure APIC pod policy
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni/fabric/funcprof.xml
+      method: post
+      content: |
+        <fabricPodPGrp annotation="" descr="" name="Fabric_PodPolicy">
+            <fabricRsSnmpPol annotation="" tnSnmpPolName="Snmp_Allow"/>
+            <fabricRsPodPGrpIsisDomP annotation="" tnIsisDomPolName=""/>
+            <fabricRsPodPGrpCoopP annotation="" tnCoopPolName=""/>
+            <fabricRsPodPGrpBGPRRP annotation="" tnBgpInstPolName=""/>
+            <fabricRsTimePol annotation="" tnDatetimePolName="Fabric_Date_Time"/>
+            <fabricRsMacsecPol annotation="" tnMacsecFabIfPolName=""/>
+            <fabricRsCommPol annotation="" tnCommPolName=""/>
+        </fabricPodPGrp>
+    delegate_to: localhost
+
+  - name: Apply APIC pod policy to a pod profile
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni/fabric.xml
+      method: post
+      content: |
+        <fabricPodP annotation="" descr="" name="default" nameAlias="" ownerKey="" ownerTag="">
+            <fabricPodS annotation="" descr="" name="default" nameAlias="" ownerKey="" ownerTag="" type="ALL">
+                <fabricRsPodPGrp annotation="" tDn="uni/fabric/funcprof/podpgrp-Fabric_PodPolicy"/>
+            </fabricPodS>
+        </fabricPodP>
+    delegate_to: localhost
+
+  - name: Set APIC connectivity preference to OOB
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni/fabric.xml
+      method: post
+      content: |
+        <mgmtConnectivityPrefs annotation="" descr="" interfacePref="ooband" name="default" nameAlias="" ownerKey="" ownerTag=""/>
+    delegate_to: localhost
+
+  - name: Configure spines as BGP route reflectors and set BGP AS number for Pod
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni/fabric.xml
+      method: post
+      content: |
+        <bgpInstPol annotation="" descr="" name="default" nameAlias="" ownerKey="" ownerTag="">
+          <bgpRRP annotation="" descr="" name="" nameAlias="">
+            <bgpRRNodePEp annotation="" descr="" id="{{ switches.spine.sw1.nodeId }}" nameAlias="" podId="1"/>
+            <bgpRRNodePEp annotation="" descr="" id="{{ switches.spine.sw2.nodeId }}" nameAlias="" podId="1"/>
+          </bgpRRP>
+          <bgpExtRRP annotation="" descr="" name="" nameAlias=""/>
+          <bgpAsP annotation="" asn="{{ dc.bgpRrAsn }}" descr="" name="" nameAlias=""/>
+        </bgpInstPol>
+    delegate_to: localhost
+
+  - name: Configure fabric DNS servers and DNS domain name
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni/fabric.xml
+      method: post
+      content: |
+        <dnsProfile IPVerPreference="IPv4" annotation="" descr="" name="default" nameAlias="" ownerKey="" ownerTag="">
+            {% for server in dc.dnsServer %}
+            <dnsProv addr="{{ server }}" annotation="" name="" nameAlias="" preferred="no"/>
+            {% endfor %}
+            <dnsDomain annotation="" descr="" isDefault="yes" name="{{ dc.dnsDomain}}" nameAlias=""/>
+        </dnsProfile>
+    delegate_to: localhost
+
+  - name: Create filters for SSH, HTTPS and SNMP
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni.xml
+      method: post
+      content: |
+        <fvTenant name="mgmt">
+            <vzFilter annotation="" descr="" name="Ssh_Allow" nameAlias="" ownerKey="" ownerTag="">
+              <vzEntry annotation="" applyToFrag="no" arpOpc="unspecified" dFromPort="unspecified" dToPort="unspecified" descr="" etherT="ip" icmpv4T="unspecified" icmpv6T="unspecified" matchDscp="unspecified" name="Ssh" nameAlias="" prot="tcp" sFromPort="22" sToPort="22" stateful="no" tcpRules=""/>
+            </vzFilter>
+            <vzFilter annotation="" descr="" name="Https_Allow" nameAlias="" ownerKey="" ownerTag="">
+                <vzEntry annotation="" applyToFrag="no" arpOpc="unspecified" dFromPort="unspecified" dToPort="unspecified" descr="" etherT="ip" icmpv4T="unspecified" icmpv6T="unspecified" matchDscp="unspecified" name="Https" nameAlias="" prot="tcp" sFromPort="https" sToPort="https" stateful="no" tcpRules=""/>
+            </vzFilter>
+            <vzFilter annotation="" descr="" name="Snmp_Allow" nameAlias="" ownerKey="" ownerTag="">
+              <vzEntry annotation="" applyToFrag="no" arpOpc="unspecified" dFromPort="161" dToPort="162" descr="" etherT="ip" icmpv4T="unspecified" icmpv6T="unspecified" matchDscp="unspecified" name="Snmp" nameAlias="" prot="udp" sFromPort="161" sToPort="162" stateful="no" tcpRules=""/>
+            </vzFilter>
+        </fvTenant>
+    delegate_to: localhost
+
+  - name: Create management filter policy for APIC pod
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni.xml
+      method: post
+      content: |
+        <fvTenant name="mgmt">
+            <vzOOBBrCP annotation="" descr="" name="Fabric_Mgmt_Allow" nameAlias="" ownerKey="" ownerTag="" prio="unspecified" scope="context" targetDscp="unspecified">
+                <vzSubj annotation="" consMatchT="AtleastOne" descr="" name="Mgmt_Allow" nameAlias="" prio="unspecified" provMatchT="AtleastOne" revFltPorts="yes" targetDscp="unspecified">
+                    <vzRsSubjFiltAtt action="permit" annotation="" directives="" priorityOverride="default" tnVzFilterName="Ssh_Allow"/>
+                    <vzRsSubjFiltAtt action="permit" annotation="" directives="" priorityOverride="default" tnVzFilterName="Snmp_Allow"/>
+                    <vzRsSubjFiltAtt action="permit" annotation="" directives="" priorityOverride="default" tnVzFilterName="Https_Allow"/>
+                </vzSubj>
+            </vzOOBBrCP>
+        </fvTenant>
+    delegate_to: localhost
+
+  - name: Apply management filter to pod
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni.xml
+      method: post
+      content: |
+        <fvTenant name="mgmt">
+          <mgmtExtMgmtEntity name="default">
+            <mgmtInstP name="Fabric_Mgmt_Restriction">
+              <mgmtRsOoBCons tnVzOOBBrCPName="Fabric_Mgmt_Allow" />
+              {% for subnet in dc.mgmtNetworks %}
+              <mgmtSubnet ip="{{ subnet }}" />
+              {% endfor %}
+            </mgmtInstP>
+          </mgmtExtMgmtEntity>
+        </fvTenant>
+    delegate_to: localhost
+
+  - name: Define fabric syslog servers
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni/fabric.xml
+      method: post
+      content: |
+        <syslogGroup annotation="" descr="" format="aci" name="Fabric_Syslog_Enable" nameAlias="">
+            {% for server in dc.fabricSyslog %}
+            <syslogRemoteDest adminState="enabled" annotation="" descr="" format="aci" forwardingFacility="local7" host="{{ server }}" name="" nameAlias="" port="514" severity="warnings">
+                <fileRsARemoteHostToEpg annotation="" tDn="uni/tn-mgmt/mgmtp-default/oob-default"/>
+            </syslogRemoteDest>
+            {% endfor %}
+            <syslogProf adminState="enabled" annotation="" descr="" name="syslog" nameAlias=""/>
+            <syslogFile adminState="enabled" annotation="" descr="" format="aci" name="" nameAlias="" severity="information"/>
+            <syslogConsole adminState="enabled" annotation="" descr="" format="aci" name="" nameAlias="" severity="alerts"/>
+        </syslogGroup>
+    delegate_to: localhost
+
+  - name: Apply fabric syslog servers
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni/fabric/moncommon.xml
+      method: post
+      content: |
+        <syslogSrc annotation="" descr="" incl="all,audit,events,faults,session" minSev="warnings" name="Fabric_Syslog_Enable" nameAlias="">
+          <syslogRsDestGroup annotation="" tDn="uni/fabric/slgroup-Fabric_Syslog_Enable"/>
+        </syslogSrc>
+    delegate_to: localhost

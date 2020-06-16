@@ -1,0 +1,228 @@
+- name: APIC - Leaf interface setup
+  hosts: dCloud1
+  gather_facts: no
+
+  vars:
+    aci_login: &aci_login
+      hostname: '{{ apic_host }}'
+      username: '{{ apic_username }}'
+      password: '{{ apic_password }}'
+      use_proxy: '{{ apic_use_proxy }}'
+      validate_certs: '{{ apic_validate_certs }}'
+    template: "{{ lookup('file', 'group_vars/template.json') | from_json }}"
+
+  
+  tasks:
+  - name: Add interface profiles and port block ranges for each leaf node pairs 
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni.xml
+      method: post
+      content: |
+        <infraInfra>
+          {% for nodepair in switches.leaf.nodes %}
+          <infraAccPortP name="Leaf{{ nodepair.sw1.nodeId }}_IntProf">
+            {% for n in range(template[nodepair.template].endPort) %}
+            <infraHPortS name="eth1_{{ n+1 }}" type="range">
+              <infraPortBlk annotation="" descr="" fromCard="1" fromPort="{{ n+1 }}" name="blk" nameAlias="" toCard="1" toPort="{{ n+1 }}"/>
+            </infraHPortS>
+            {% endfor %}
+          </infraAccPortP>
+          <infraAccPortP name="Leaf{{ nodepair.sw2.nodeId }}_IntProf">
+            {% for n in range(template[nodepair.template].endPort) %}
+            <infraHPortS name="eth1_{{ n+1 }}" type="range">
+              <infraPortBlk annotation="" descr="" fromCard="1" fromPort="{{ n+1 }}" name="blk" nameAlias="" toCard="1" toPort="{{ n+1 }}"/>
+            </infraHPortS>
+            {% endfor %}
+          </infraAccPortP>
+          {% endfor %}
+        </infraInfra>
+    delegate_to: localhost
+
+  - name: Create leaf switch selector profiles
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni.xml
+      method: post
+      content: |
+        <infraInfra>
+            {% for nodepair in switches.leaf.nodes %}
+            <infraNodeP descr="" name="Leaf{{ nodepair.sw1.nodeId }}_SwSel">
+                <infraRsAccPortP annotation="" tDn="uni/infra/accportprof-Leaf{{ nodepair.sw1.nodeId }}_IntProf"/>
+                <infraLeafS descr="" name="Leaf{{ nodepair.sw1.nodeId }}" type="range">
+                    <infraNodeBlk descr="" from_="{{ nodepair.sw1.nodeId }}" name="Leaf{{ nodepair.sw1.nodeId }}" nameAlias="" to_="{{ nodepair.sw1.nodeId }}"/>
+                </infraLeafS>
+            </infraNodeP>
+            <infraNodeP descr="" name="Leaf{{ nodepair.sw2.nodeId }}_SwSel">
+                <infraRsAccPortP annotation="" tDn="uni/infra/accportprof-Leaf{{ nodepair.sw2.nodeId }}_IntProf"/>
+                <infraLeafS descr="" name="Leaf{{ nodepair.sw2.nodeId }}" type="range">
+                    <infraNodeBlk descr="" from_="{{ nodepair.sw2.nodeId }}" name="Leaf102" nameAlias="" to_="{{ nodepair.sw2.nodeId }}"/>
+                </infraLeafS>
+            </infraNodeP>
+            {% endfor %}
+        </infraInfra>
+    delegate_to: localhost
+
+  - name: Create explicit VPC protection pairs for each leaf pairing
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni/fabric.xml
+      method: post
+      content: |
+        <fabricProtPol annotation="" descr="" name="default" pairT="explicit">
+            {% for nodepair in switches.leaf.nodes %}
+            <fabricExplicitGEp annotation="" id="{{ nodepair.vpcProtId }}" name="Leaf{{ nodepair.sw1.nodeId }}_{{ nodepair.sw2.nodeId }}">
+                <fabricRsVpcInstPol annotation="" tnVpcInstPolName=""/>
+                <fabricNodePEp annotation="" descr="" id="{{ nodepair.sw1.nodeId }}" name="" nameAlias="" podId="1"/>
+                <fabricNodePEp annotation="" descr="" id="{{ nodepair.sw2.nodeId }}" name="" nameAlias="" podId="1"/>
+            </fabricExplicitGEp>
+            {% endfor %}
+        </fabricProtPol>
+    delegate_to: localhost
+
+
+  - name: Create standard interface port profile settings
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni/infra.xml
+      method: post
+      content: |
+        <infraInfra>
+            <fabricHIfPol autoNeg="on" fecMode="inherit" linkDebounce="100" name="100_Gig_Auto" speed="100G"/>
+            <fabricHIfPol autoNeg="on" fecMode="inherit" linkDebounce="100" name="40_Gig_Auto" speed="40G"/>
+            <fabricHIfPol autoNeg="on" fecMode="inherit" linkDebounce="100" name="25_Gig_Auto" speed="25G"/>
+            <fabricHIfPol autoNeg="on" fecMode="inherit" linkDebounce="100" name="10_Gig_Auto" speed="10G"/>
+            <fabricHIfPol autoNeg="on" fecMode="inherit" linkDebounce="100" name="1_Gig_Auto" speed="1G"/>
+            <fabricHIfPol autoNeg="on" fecMode="inherit" linkDebounce="100" name="100_Mbps_Auto" nameAlias="" speed="100M"/>
+            <fabricHIfPol autoNeg="off" fecMode="inherit" linkDebounce="100" name="100_Mbps_Full" nameAlias="" speed="100M"/>
+            <cdpIfPol adminSt="enabled" name="Cdp_Enabled"/>
+            <cdpIfPol adminSt="disabled" name="Cdp_Disabled"/>
+            <lldpIfPol adminRxSt="enabled" adminTxSt="enabled" name="Lldp_Enabled" />
+            <lldpIfPol adminRxSt="disabled" adminTxSt="disabled" name="Lldp_Disabled"/>
+            <lacpLagPol annotation="" ctrl="fast-sel-hot-stdby,graceful-conv,susp-individual" descr="" maxLinks="16" minLinks="1" mode="active" name="Lacp_Active"/>
+            <lacpLagPol annotation="" ctrl="fast-sel-hot-stdby,graceful-conv,susp-individual" descr="" maxLinks="16" minLinks="1" mode="passive" name="Lacp_Passive"/>
+            <lacpLagPol annotation="" ctrl="fast-sel-hot-stdby,graceful-conv,susp-individual" descr="" maxLinks="16" minLinks="1" mode="off" name="Lacp_Off_Trunk_Mode_On"/>
+            <stpIfPol ctrl="bpdu-filter" descr="" name="Bpdu_Filter_Enable"/>
+            <stpIfPol ctrl="bpdu-guard" descr="" name="Bpdu_Guard_Enable"/>
+            <stpIfPol ctrl="bpdu-filter,bpdu-guard" descr="" name="Bpdu_Filter_Guard_Enable"/>
+            <mcpIfPol adminSt="enabled" descr="" name="Mcp_Enabled"/>
+            <mcpIfPol adminSt="disabled" descr=""  name="Mcp_Disabled"/>
+            <qosPfcIfPol adminSt="on" annotation="" descr="" name="Pfc_On"/>
+            <qosPfcIfPol adminSt="off" annotation="" descr="" name="Pfc_Off"/>
+        </infraInfra>
+    delegate_to: localhost
+
+  - name: Create bare metal interface port profiles
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni/infra.xml
+      method: post
+      content: |
+        <infraFuncP>
+            <infraAccPortGrp annotation="" descr="" name="Bm_Auto_IntPoPlGp">
+                <infraRsStpIfPol annotation="" tnStpIfPolName=""/>
+                <infraRsQosIngressDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsStormctrlIfPol annotation="" tnStormctrlIfPolName=""/>
+                <infraRsQosEgressDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsMonIfInfraPol annotation="" tnMonInfraPolName=""/>
+                <infraRsMcpIfPol annotation="" tnMcpIfPolName="Mcp_Enabled"/>
+                <infraRsMacsecIfPol annotation="" tnMacsecIfPolName=""/>
+                <infraRsQosSdIfPol annotation="" tnQosSdIfPolName=""/>
+                <infraRsAttEntP annotation="" tDn="uni/infra/attentp-{{ dc.siteCode }}_Prod_Aaep"/>
+                <infraRsCdpIfPol annotation="" tnCdpIfPolName="Cdp_Enabled"/>
+                <infraRsL2IfPol annotation="" tnL2IfPolName=""/>
+                <infraRsQosDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsCoppIfPol annotation="" tnCoppIfPolName=""/>
+                <infraRsDwdmIfPol annotation="" tnDwdmIfPolName=""/>
+                <infraRsLldpIfPol annotation="" tnLldpIfPolName="Lldp_Enabled"/>
+                <infraRsHIfPol annotation="" tnFabricHIfPolName=""/>
+                <infraRsQosPfcIfPol annotation="" tnQosPfcIfPolName=""/>
+                <infraRsL2PortSecurityPol annotation="" tnL2PortSecurityPolName=""/>
+                <infraRsL2PortAuthPol annotation="" tnL2PortAuthPolName=""/>
+            </infraAccPortGrp>
+            <infraAccPortGrp annotation="" descr="" name="Bm_1G_IntPoPlGp">
+                <infraRsStpIfPol annotation="" tnStpIfPolName=""/>
+                <infraRsQosIngressDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsStormctrlIfPol annotation="" tnStormctrlIfPolName=""/>
+                <infraRsQosEgressDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsMonIfInfraPol annotation="" tnMonInfraPolName=""/>
+                <infraRsMcpIfPol annotation="" tnMcpIfPolName="Mcp_Enabled"/>
+                <infraRsMacsecIfPol annotation="" tnMacsecIfPolName=""/>
+                <infraRsQosSdIfPol annotation="" tnQosSdIfPolName=""/>
+                <infraRsAttEntP annotation="" tDn="uni/infra/attentp-{{ dc.siteCode }}_Prod_Aaep"/>
+                <infraRsCdpIfPol annotation="" tnCdpIfPolName="Cdp_Enabled"/>
+                <infraRsL2IfPol annotation="" tnL2IfPolName=""/>
+                <infraRsQosDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsCoppIfPol annotation="" tnCoppIfPolName=""/>
+                <infraRsDwdmIfPol annotation="" tnDwdmIfPolName=""/>
+                <infraRsLldpIfPol annotation="" tnLldpIfPolName="Lldp_Enabled"/>
+                <infraRsHIfPol annotation="" tnFabricHIfPolName="1_Gig_Auto"/>
+                <infraRsQosPfcIfPol annotation="" tnQosPfcIfPolName=""/>
+                <infraRsL2PortSecurityPol annotation="" tnL2PortSecurityPolName=""/>
+                <infraRsL2PortAuthPol annotation="" tnL2PortAuthPolName=""/>
+            </infraAccPortGrp>
+            <infraAccPortGrp annotation="" descr="" name="Bm_10G_IntPoPlGp">
+                <infraRsStpIfPol annotation="" tnStpIfPolName=""/>
+                <infraRsQosIngressDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsStormctrlIfPol annotation="" tnStormctrlIfPolName=""/>
+                <infraRsQosEgressDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsMonIfInfraPol annotation="" tnMonInfraPolName=""/>
+                <infraRsMcpIfPol annotation="" tnMcpIfPolName="Mcp_Enabled"/>
+                <infraRsMacsecIfPol annotation="" tnMacsecIfPolName=""/>
+                <infraRsQosSdIfPol annotation="" tnQosSdIfPolName=""/>
+                <infraRsAttEntP annotation="" tDn="uni/infra/attentp-{{ dc.siteCode }}_Prod_Aaep"/>
+                <infraRsCdpIfPol annotation="" tnCdpIfPolName="Cdp_Enabled"/>
+                <infraRsL2IfPol annotation="" tnL2IfPolName=""/>
+                <infraRsQosDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsCoppIfPol annotation="" tnCoppIfPolName=""/>
+                <infraRsDwdmIfPol annotation="" tnDwdmIfPolName=""/>
+                <infraRsLldpIfPol annotation="" tnLldpIfPolName="Lldp_Enabled"/>
+                <infraRsHIfPol annotation="" tnFabricHIfPolName="10_Gig_Auto"/>
+                <infraRsQosPfcIfPol annotation="" tnQosPfcIfPolName=""/>
+                <infraRsL2PortSecurityPol annotation="" tnL2PortSecurityPolName=""/>
+                <infraRsL2PortAuthPol annotation="" tnL2PortAuthPolName=""/>
+            </infraAccPortGrp>
+            <infraAccPortGrp annotation="" descr="" name="Bm_25G_IntPoPlGp">
+                <infraRsStpIfPol annotation="" tnStpIfPolName=""/>
+                <infraRsQosIngressDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsStormctrlIfPol annotation="" tnStormctrlIfPolName=""/>
+                <infraRsQosEgressDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsMonIfInfraPol annotation="" tnMonInfraPolName=""/>
+                <infraRsMcpIfPol annotation="" tnMcpIfPolName="Mcp_Enabled"/>
+                <infraRsMacsecIfPol annotation="" tnMacsecIfPolName=""/>
+                <infraRsQosSdIfPol annotation="" tnQosSdIfPolName=""/>
+                <infraRsAttEntP annotation="" tDn="uni/infra/attentp-{{ dc.siteCode }}_Prod_Aaep"/>
+                <infraRsCdpIfPol annotation="" tnCdpIfPolName="Cdp_Enabled"/>
+                <infraRsL2IfPol annotation="" tnL2IfPolName=""/>
+                <infraRsQosDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsCoppIfPol annotation="" tnCoppIfPolName=""/>
+                <infraRsDwdmIfPol annotation="" tnDwdmIfPolName=""/>
+                <infraRsLldpIfPol annotation="" tnLldpIfPolName="Lldp_Enabled"/>
+                <infraRsHIfPol annotation="" tnFabricHIfPolName="25_Gig_Auto"/>
+                <infraRsQosPfcIfPol annotation="" tnQosPfcIfPolName=""/>
+                <infraRsL2PortSecurityPol annotation="" tnL2PortSecurityPolName=""/>
+                <infraRsL2PortAuthPol annotation="" tnL2PortAuthPolName=""/>
+            </infraAccPortGrp>
+            <infraAccPortGrp annotation="" descr="" name="Bm_40G_IntPoPlGp">
+                <infraRsStpIfPol annotation="" tnStpIfPolName=""/>
+                <infraRsQosIngressDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsStormctrlIfPol annotation="" tnStormctrlIfPolName=""/>
+                <infraRsQosEgressDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsMonIfInfraPol annotation="" tnMonInfraPolName=""/>
+                <infraRsMcpIfPol annotation="" tnMcpIfPolName="Mcp_Enabled"/>
+                <infraRsMacsecIfPol annotation="" tnMacsecIfPolName=""/>
+                <infraRsQosSdIfPol annotation="" tnQosSdIfPolName=""/>
+                <infraRsAttEntP annotation="" tDn="uni/infra/attentp-{{ dc.siteCode }}_Prod_Aaep"/>
+                <infraRsCdpIfPol annotation="" tnCdpIfPolName="Cdp_Enabled"/>
+                <infraRsL2IfPol annotation="" tnL2IfPolName=""/>
+                <infraRsQosDppIfPol annotation="" tnQosDppPolName=""/>
+                <infraRsCoppIfPol annotation="" tnCoppIfPolName=""/>
+                <infraRsDwdmIfPol annotation="" tnDwdmIfPolName=""/>
+                <infraRsLldpIfPol annotation="" tnLldpIfPolName="Lldp_Enabled"/>
+                <infraRsHIfPol annotation="" tnFabricHIfPolName="40_Gig_Auto"/>
+                <infraRsQosPfcIfPol annotation="" tnQosPfcIfPolName=""/>
+                <infraRsL2PortSecurityPol annotation="" tnL2PortSecurityPolName=""/>
+                <infraRsL2PortAuthPol annotation="" tnL2PortAuthPolName=""/>
+            </infraAccPortGrp>
+        </infraFuncP>
+    delegate_to: localhost

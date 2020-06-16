@@ -1,0 +1,10 @@
+all:
+    hosts:
+        dCloud1:
+            apic_host: 198.18.133.200
+            apic_username: admin
+            apic_password: C1sco12345
+
+    vars:
+        apic_use_proxy: no
+        apic_validate_certs: no

@@ -1,0 +1,62 @@
+- name: Create and associate VPCs
+  hosts: dCloud1
+  gather_facts: no
+
+  vars:
+    aci_login: &aci_login
+      hostname: '{{ apic_host }}'
+      username: '{{ apic_username }}'
+      password: '{{ apic_password }}'
+      use_proxy: '{{ apic_use_proxy }}'
+      validate_certs: '{{ apic_validate_certs }}'
+    template: "{{ lookup('file', 'group_vars/template_2.json') | from_json }}"
+
+  tasks:
+  - name: Create VPC pairs based on template and nodes
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni/infra.xml
+      method: post
+      content: |
+        <infraFuncP>
+            {% for node in switches.leaf.nodes %}
+            {% for templ in template[node.template].vpc %}
+            <infraAccBndlGrp annotation="" descr="" lagT="node" name="{{ dc.siteCode }}_Prod_{{ node.template.upper() }}_{{ node.sw1.nodeId }}_{{ node.sw2.nodeId }}_Eth{{ templ.range }}_Vpc_{{ templ.port }}_IntPoPlGrp">
+                <infraRsMcpIfPol annotation="" tnMcpIfPolName="Mcp_Enabled"/>
+                <infraRsAttEntP annotation="" tDn="uni/infra/attentp-{{ dc.siteCode }}_Prod_Aaep"/>
+                <infraRsCdpIfPol annotation="" tnCdpIfPolName="Cdp_Enabled"/>
+                <infraRsLacpPol annotation="" tnLacpLagPolName="Lacp_Active"/>
+                <infraRsLldpIfPol annotation="" tnLldpIfPolName="Lldp_Enabled"/>
+            </infraAccBndlGrp>
+            {% endfor %}
+            {% endfor %}
+        </infraFuncP>
+    delegate_to: localhost
+
+  - name: Apply VPC pairs based on template and nodes
+    aci_rest:
+      <<: *aci_login
+      path: /api/mo/uni/infra.xml
+      method: post
+      content: |
+        <infraInfra>
+            {% for node in switches.leaf.nodes %}
+            <infraAccPortP name="Leaf{{ node.sw1.nodeId }}_IntProf">
+                {% for intf in template[node.template].port %}
+                <infraHPortS name="eth1_{{ intf.id }}" type="range">
+                    <infraRsAccBaseGrp tDn="uni/infra/funcprof/accbundle-{{ dc.siteCode }}_Prod_{{ node.template.upper() }}_{{ node.sw1.nodeId }}_{{ node.sw2.nodeId }}_Eth{{ intf.range }}_Vpc_{{ intf.vpc }}_IntPoPlGrp" />
+                </infraHPortS>
+                {% endfor %}
+            </infraAccPortP>
+            <infraAccPortP name="Leaf{{ node.sw2.nodeId }}_IntProf">
+                {% for intf in template[node.template].port %}
+                <infraHPortS name="eth1_{{ intf.id }}" type="range">
+                    <infraRsAccBaseGrp tDn="uni/infra/funcprof/accbundle-{{ dc.siteCode }}_Prod_{{ node.template.upper() }}_{{ node.sw1.nodeId }}_{{ node.sw2.nodeId }}_Eth{{ intf.range }}_Vpc_{{ intf.vpc }}_IntPoPlGrp" />
+                </infraHPortS>
+                {% endfor %}
+            </infraAccPortP>
+            {% endfor %}
+        </infraInfra>
+    delegate_to: localhost
+
+    

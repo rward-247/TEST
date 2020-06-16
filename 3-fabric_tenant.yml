@@ -1,0 +1,146 @@
+- name: APIC - Fabric and tenant setup
+  hosts: dCloud1
+  gather_facts: no
+
+  vars:
+    aci_login: &aci_login
+      hostname: '{{ apic_host }}'
+      username: '{{ apic_username }}'
+      password: '{{ apic_password }}'
+      use_proxy: '{{ apic_use_proxy }}'
+      validate_certs: '{{ apic_validate_certs }}'
+  
+  tasks:
+  - name: Add a new production tenant
+    aci_tenant:
+      <<: *aci_login
+      tenant: "{{ dc.siteCode }}_Prod"
+      state: present
+    delegate_to: localhost
+
+  - name: Define tenant syslog servers
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni/fabric.xml
+      method: post
+      content: |
+        <syslogGroup annotation="" descr="" format="aci" name="{{ dc.siteCode }}_Prod_Syslog_Enable" nameAlias="">
+            {% for server in tenant.tenantSyslog %}
+            <syslogRemoteDest adminState="enabled" annotation="" descr="" format="aci" forwardingFacility="local7" host="{{ server }}" name="" nameAlias="" port="514" severity="warnings">
+                <fileRsARemoteHostToEpg annotation="" tDn="uni/tn-mgmt/mgmtp-default/oob-default"/>
+            </syslogRemoteDest>
+            {% endfor %}
+            <syslogProf adminState="enabled" annotation="" descr="" name="syslog" nameAlias=""/>
+            <syslogFile adminState="enabled" annotation="" descr="" format="aci" name="" nameAlias="" severity="information"/>
+            <syslogConsole adminState="enabled" annotation="" descr="" format="aci" name="" nameAlias="" severity="alerts"/>
+        </syslogGroup>
+    delegate_to: localhost
+
+  - name: Apply tenant syslog servers
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni.xml
+      method: post
+      content: |
+        <fvTenant name="{{ dc.siteCode }}_Prod">
+            <monEPGPol annotation="" descr="" name="{{ dc.siteCode }}_Prod_MonPol" nameAlias="" ownerKey="" ownerTag="">
+                <syslogSrc annotation="" descr="" incl="all,audit,events,faults,session" minSev="warnings" name="{{ dc.siteCode }}_Prod_Syslog" nameAlias="">
+                    <syslogRsDestGroup annotation="" tDn="uni/fabric/slgroup-{{ dc.siteCode }}_Prod_Syslog_Enable"/>
+                </syslogSrc>
+            </monEPGPol>
+        </fvTenant>
+    delegate_to: localhost
+
+  - name: Register spine and leaf nodes with APIC fabric and assign node IDs
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni/controller.xml
+      method: post
+      content: |
+        <fabricNodeIdentPol>
+          <!-- spines -->
+          <fabricNodeIdentP serial="{{ switches.spine.sw1.serialNumber }}" name="{{ switches.spine.sw1.hostname }}" nodeId="{{ switches.spine.sw1.nodeId }}" role="spine"/>
+          <fabricNodeIdentP serial="{{ switches.spine.sw2.serialNumber }}" name="{{ switches.spine.sw2.hostname }}" nodeId="{{ switches.spine.sw2.nodeId }}" role="spine"/>
+          <!-- leafs -->
+          {% for switch in switches.leaf.nodes %}
+          <fabricNodeIdentP serial="{{ switch.sw1.serialNumber }}" name="{{ switch.sw1.hostname }}" nodeId="{{ switch.sw1.nodeId }}" role="leaf"/>
+          <fabricNodeIdentP serial="{{ switch.sw2.serialNumber }}" name="{{ switch.sw2.hostname }}" nodeId="{{ switch.sw2.nodeId }}" role="leaf"/>
+        {% endfor %}
+        </fabricNodeIdentPol>
+    delegate_to: localhost
+
+
+  - name: Create VLAN pools (static and dynamic) and assign site VLANs to static pool (Ansible aci_vlan_encaps_block not working properly so using XML)
+    aci_rest:
+      <<: *aci_login
+      path: /api/node/mo/uni/infra.xml
+      method: post
+      content: |
+        <infraInfra>
+            <fvnsVlanInstP allocMode="static" name="{{ dc.siteCode }}_Prod_Static_VlPool">
+                {% for vlan in tenant.vlanList %}
+                <fvnsEncapBlk allocMode="inherit" from="vlan-{{ vlan }}" to="vlan-{{ vlan }}"/>
+                {% endfor %}
+            </fvnsVlanInstP>
+            <fvnsVlanInstP allocMode="dynamic" name="{{ dc.siteCode }}_Prod_Dynamic_VlPool">
+          </fvnsVlanInstP>
+        </infraInfra>
+    delegate_to: localhost
+
+  - name: Create physical domain
+    aci_domain:
+      <<: *aci_login
+      domain: "{{ dc.siteCode }}_Prod_Phys_Dom"
+      domain_type: phys
+      state: present
+    delegate_to: localhost
+
+  - name: Bind physical domain to physical VLAN pool
+    aci_domain_to_vlan_pool:
+      <<: *aci_login
+      domain: "{{ dc.siteCode }}_Prod_Phys_Dom"
+      domain_type: phys
+      pool: "{{ dc.siteCode }}_Prod_Static_VlPool"
+      pool_allocation_mode: static
+      state: present
+    delegate_to: localhost
+
+  - name: Create dynamic domain
+    aci_domain:
+      <<: *aci_login
+      domain: "{{ dc.siteCode }}_Prod_Dynamic_Dom"
+      domain_type: vmm
+      vm_provider: vmware
+      state: present
+    delegate_to: localhost
+
+  - name: Bind dynamic domain to dynamic VLAN pool
+    aci_domain_to_vlan_pool:
+      <<: *aci_login
+      domain: "{{ dc.siteCode }}_Prod_Dynamic_Dom"
+      domain_type: vmm
+      pool: "{{ dc.siteCode }}_Prod_Dynamic_VlPool"
+      pool_allocation_mode: dynamic
+      vm_provider: vmware
+      state: present
+    delegate_to: localhost
+
+  - name: Create production AAEP
+    aci_aep:
+        <<: *aci_login
+        aep: "{{ dc.siteCode }}_Prod_Aaep"
+        infra_vlan: no 
+        state: present 
+    delegate_to: localhost
+
+  - name: Add AEP to domain binding
+    aci_aep_to_domain:
+      <<: *aci_login
+      aep: "{{ dc.siteCode }}_Prod_Aaep"
+      domain: "{{ item }}"
+      domain_type: phys
+      state: present
+    with_items:
+      - "{{ dc.siteCode }}_Prod_Phys_Dom"
+      - "{{ dc.siteCode }}_Prod_Dynamic_Dom"
+    delegate_to: localhost
